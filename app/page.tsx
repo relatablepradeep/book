@@ -23,6 +23,86 @@ export default function Home() {
     tessedit_create_pdf: '0' as const, // Faster processing
   };
 
+  // ✅ Best available voice selection (prioritizes high-quality en-US voices)
+  const getBestVoice = (): SpeechSynthesisVoice | null => {
+    if (!('speechSynthesis' in window)) return null;
+    const voices = speechSynthesis.getVoices();
+    if (voices.length === 0) return null; // Voices load async, but we'll handle in speak function
+
+    // Prioritize: Google/Microsoft premium voices (as of 2025, common high-quality options)
+    const preferredVoices = [
+      'Google US English', // Natural, clear
+      'Microsoft Zira Desktop - English (United States)', // Smooth for reading
+      'Samantha (Enhanced)', // macOS high-quality
+      'en-US-Wavenet-D' // If WaveNet available
+    ];
+
+    for (const pref of preferredVoices) {
+      const voice = voices.find(v => v.name.includes(pref) || v.name === pref);
+      if (voice && voice.lang.startsWith('en-US')) return voice;
+    }
+
+    // Fallback: First en-US female or neutral
+    return voices.find(v => v.lang.startsWith('en-US') && v.gender === 'female') ||
+           voices.find(v => v.lang.startsWith('en-US'));
+  };
+
+  // ✅ Chunk text into ~200-word segments for unlimited range
+  const chunkText = (text: string, maxWords: number = 200): string[] => {
+    const words = text.split(/\s+/);
+    const chunks: string[] = [];
+    let currentChunk = '';
+    for (const word of words) {
+      if ((currentChunk.split(/\s+/).length + 1) > maxWords) {
+        if (currentChunk) chunks.push(currentChunk.trim());
+        currentChunk = word + ' ';
+      } else {
+        currentChunk += word + ' ';
+      }
+    }
+    if (currentChunk) chunks.push(currentChunk.trim());
+    return chunks;
+  };
+
+  // ✅ Speak with chunking and best voice
+  const speakText = (text: string) => {
+    if (!('speechSynthesis' in window)) {
+      setStatus('❌ Speech not supported.');
+      return;
+    }
+
+    const chunks = chunkText(text);
+    let chunkIndex = 0;
+
+    const speakNext = () => {
+      if (chunkIndex >= chunks.length) return;
+
+      const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex]);
+      const bestVoice = getBestVoice();
+      if (bestVoice) utterance.voice = bestVoice;
+
+      utterance.rate = 0.8; // Slower for clarity
+      utterance.pitch = 1;
+      utterance.lang = 'en-US';
+      utterance.volume = 1;
+
+      utterance.onend = () => {
+        chunkIndex++;
+        if (chunkIndex < chunks.length) {
+          speakNext();
+        } else {
+          setStatus('✅ Full page read complete!');
+        }
+      };
+
+      speechSynthesis.cancel();
+      speechSynthesis.speak(utterance);
+    };
+
+    speakNext();
+    setStatus(`✅ Starting to read (${chunks.length} chunks)...`);
+  };
+
   // ✅ Otsu Threshold Calculation (for adaptive binarization)
   const calculateOtsuThreshold = (data: Uint8ClampedArray, width: number, height: number): number => {
     const histogram = new Array(256).fill(0);
@@ -153,7 +233,8 @@ export default function Home() {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
-    setStatus('🛑 Camera stopped.');
+    speechSynthesis.cancel(); // Stop any ongoing speech
+    setStatus('🛑 Camera & speech stopped.');
   };
 
   // ✅ Perform OCR with advanced preprocessing
@@ -174,22 +255,18 @@ export default function Home() {
       setExtractedText(cleanText || 'No text detected');
 
       setConfidence(conf);
-      setStatus(cleanText ? `✅ Page scanned! Confidence: ${Math.round(conf)}%` : '❌ No text. Try better angle/light.');
+      if (!cleanText) {
+        setStatus('❌ No text. Try better angle/light.');
+        return;
+      }
 
-      // Speak if high confidence (>75%) and meaningful text (>50 chars)
-      if (conf > 75 && cleanText.length > 50) {
-        if ('speechSynthesis' in window) {
-          const utterance = new SpeechSynthesisUtterance(cleanText);
-          utterance.rate = 0.8; // Slower for clarity
-          utterance.pitch = 1;
-          utterance.lang = 'en-US';
-          utterance.volume = 1;
-          speechSynthesis.cancel();
-          speechSynthesis.speak(utterance);
-          setStatus(`✅ Reading page aloud... (Conf: ${Math.round(conf)}%)`);
-        } else {
-          setStatus('✅ Text ready, but no speech support.');
-        }
+      setStatus(`✅ Page scanned! Confidence: ${Math.round(conf)}% | Words: ${cleanText.split(/\s+/).length}`);
+
+      // Speak if high confidence (>75%) and meaningful text (no word limit now)
+      if (conf > 75) {
+        speakText(cleanText);
+      } else {
+        setStatus(`⚠️ Low confidence (${Math.round(conf)}%). Improve lighting for speech.`);
       }
     } catch (err) {
       setStatus(`❌ Error: ${(err as Error).message}`);
@@ -238,6 +315,17 @@ export default function Home() {
     }
   };
 
+  // ✅ Load voices on init (async)
+  useEffect(() => {
+    const loadVoices = () => {
+      if (speechSynthesis.getVoices().length > 0) return; // Already loaded
+      speechSynthesis.onvoiceschanged = () => {
+        console.log('Voices loaded:', speechSynthesis.getVoices().map(v => v.name));
+      };
+    };
+    loadVoices();
+  }, []);
+
   // ✅ Video ready handler
   useEffect(() => {
     const video = videoRef.current;
@@ -262,15 +350,16 @@ export default function Home() {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (stream) stream.getTracks().forEach((track) => track.stop());
+      speechSynthesis.cancel();
     };
   }, [stream]);
 
   return (
     <main className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4">
       <div className="max-w-md w-full space-y-6">
-        <h1 className="text-3xl font-bold text-center text-gray-800">📚 Perfect Page Scanner</h1>
+        <h1 className="text-3xl font-bold text-center text-gray-800">📚 Unlimited Page Scanner</h1>
 
-        <p className="text-center text-gray-600">Scan a page once—gets clean text, then speaks it clearly. Optimized for books!</p>
+        <p className="text-center text-gray-600">Scans full pages (no word limit)—chunks long text for seamless speech with premium voice.</p>
 
         <div className="space-y-4">
           <video
@@ -297,7 +386,7 @@ export default function Home() {
             disabled={!isCameraActive || isProcessing}
             className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-1"
           >
-            {isProcessing ? 'Scanning...' : 'Scan Page & Speak'}
+            {isProcessing ? 'Scanning...' : 'Scan Full Page & Speak'}
           </button>
 
           <button
@@ -305,7 +394,7 @@ export default function Home() {
             disabled={!isCameraActive}
             className="px-6 py-3 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            Stop
+            Stop All
           </button>
         </div>
 
@@ -331,13 +420,16 @@ export default function Home() {
         </div>
 
         <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
-          <h2 className="text-lg font-semibold mb-2 text-gray-800">Scanned Text:</h2>
+          <h2 className="text-lg font-semibold mb-2 text-gray-800">Full Scanned Text:</h2>
           <pre className="whitespace-pre-wrap text-sm text-gray-700 overflow-auto max-h-48 bg-gray-50 p-3 rounded font-mono">
             {extractedText}
           </pre>
         </div>
 
-        
+        <div className="text-xs text-gray-500 text-center space-y-1">
+          <p>💡 Scans entire pages—splits >200 words for smooth playback. Uses best available voice (e.g., Google US English).</p>
+          <p>Deploy to <a href="https://vercel.com" className="underline text-blue-600" target="_blank" rel="noopener noreferrer">Vercel</a> for mobile.</p>
+        </div>
       </div>
     </main>
   );
