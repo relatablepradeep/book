@@ -15,10 +15,12 @@ export default function Home() {
   const [isAutoScan, setIsAutoScan] = useState(false);
   const [isBlindMode, setIsBlindMode] = useState(false);
   const [confidence, setConfidence] = useState(0);
+  const [isReading, setIsReading] = useState(false); // Track if speaking
   const rafRef = useRef<number | null>(null);
   const previousTextRef = useRef(''); // For stability detection
   const scanCountRef = useRef(0); // Count stable scans
   const accumulatedTextRef = useRef(''); // Accumulate for full page
+  const hasSpokenRef = useRef(false); // Prevent re-speak on stable
 
   // ✅ Enhanced Tesseract config for higher accuracy (LSTM + PSM 6 for printed books)
   const tesseractConfig = {
@@ -83,16 +85,19 @@ export default function Home() {
     }, 500); // Slight delay for flow
   };
 
-  // ✅ Speak full text with chunking (on blur or auto)
+  // ✅ Speak full accumulated text with chunking (auto after collection)
   const speakFullText = (text: string) => {
-    if (!('speechSynthesis' in window) || !text || text === 'Extracted text will appear here...' || text === 'No text detected') return;
+    if (!('speechSynthesis' in window) || !text || text === 'Extracted text will appear here...' || text === 'No text detected' || isReading) return;
 
+    setIsReading(true);
     const chunks = chunkText(text);
     let chunkIndex = 0;
 
     const speakNext = () => {
       if (chunkIndex >= chunks.length) {
+        setIsReading(false);
         speakStatus('Reading complete.');
+        hasSpokenRef.current = true; // Mark as spoken
         return;
       }
 
@@ -279,6 +284,7 @@ export default function Home() {
     setIsCameraActive(false);
     setIsAutoScan(false);
     setIsBlindMode(false);
+    setIsReading(false);
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -288,7 +294,7 @@ export default function Home() {
     speakStatus('Stopped.');
   };
 
-  // ✅ Perform OCR with accumulation
+  // ✅ Perform OCR with accumulation & auto-speak after collection
   const performOCR = useCallback(async (video: HTMLVideoElement, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
     if (!video.videoWidth || !video.videoHeight || isProcessing) return;
 
@@ -304,16 +310,18 @@ export default function Home() {
       const cleanText = text.trim().replace(/\s+/g, ' ');
 
       if (cleanText && cleanText !== 'No text detected') {
+        let newAccumulated = accumulatedTextRef.current;
         // Accumulate if new content
         if (cleanText !== previousTextRef.current && cleanText.length > previousTextRef.current.length * 0.8) {
-          accumulatedTextRef.current += ' ' + cleanText;
+          newAccumulated += ' ' + cleanText;
           previousTextRef.current = cleanText;
           scanCountRef.current = 0; // Reset stability
         } else {
           scanCountRef.current++; // Stable
         }
 
-        setExtractedText(accumulatedTextRef.current);
+        accumulatedTextRef.current = newAccumulated;
+        setExtractedText(newAccumulated);
         setConfidence(conf);
 
         // Auto-focus text area after update for easy blur-speak
@@ -321,14 +329,14 @@ export default function Home() {
           textAreaRef.current.focus();
         }
 
-        // Auto-read when stable and high conf
-        if (scanCountRef.current >= 3 && conf > 75) {
-          speakFullText(accumulatedTextRef.current);
-          setStatus(`✅ Full page scanned! Reading... (Conf: ${Math.round(conf)}%)`);
-          speakStatus('Full page detected. Starting to read.');
+        // Auto-speak full accumulated after collection (stable + high conf, no re-speak)
+        if (scanCountRef.current >= 3 && conf > 75 && !hasSpokenRef.current) {
+          speakFullText(newAccumulated);
+          setStatus(`✅ Data collected! Speaking now... (Conf: ${Math.round(conf)}%)`);
+          speakStatus('Data collected. Speaking the full text.');
           if (isBlindMode) setIsBlindMode(false); // Auto-stop mode
-        } else {
-          setStatus(`🔍 Scanning... (${scanCountRef.current}/3 stable, Conf: ${Math.round(conf)}%)`);
+        } else if (scanCountRef.current < 3) {
+          setStatus(`🔍 Collecting data... (${scanCountRef.current}/3 stable, Conf: ${Math.round(conf)}%)`);
         }
       } else {
         setStatus('❌ No text. Adjust position.');
@@ -350,6 +358,7 @@ export default function Home() {
     accumulatedTextRef.current = ''; // Reset for manual
     scanCountRef.current = 0;
     previousTextRef.current = '';
+    hasSpokenRef.current = false;
     performOCR(videoRef.current, canvas, ctx);
   };
 
@@ -360,6 +369,7 @@ export default function Home() {
       accumulatedTextRef.current = '';
       scanCountRef.current = 0;
       previousTextRef.current = '';
+      hasSpokenRef.current = false;
       let lastScan = 0;
       const scanLoop = (currentTime: number) => {
         if (currentTime - lastScan > 1000) { // Every 1s for sweep
@@ -377,8 +387,8 @@ export default function Home() {
         }
       };
       rafRef.current = requestAnimationFrame(scanLoop);
-      setStatus('👁️ Blind Mode: Sweep over the page slowly. Auto-reads when full.');
-      speakStatus('Blind mode on. Sweep the camera slowly over the entire page. It will read when complete.');
+      setStatus('👁️ Blind Mode: Sweep over the page slowly. Auto-speaks when collected.');
+      speakStatus('Blind mode on. Sweep the camera slowly over the entire page. It will speak when data is collected.');
     } else {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
@@ -431,7 +441,7 @@ export default function Home() {
       <div className="max-w-md w-full space-y-6">
         <h1 className="text-3xl font-bold text-center text-gray-800">📚 Blind-Friendly Page Scanner</h1>
 
-        <p className="text-center text-gray-600">Auto-scans full pages as you sweep—no need to know size. Audio feedback guides you. Blur text to speak.</p>
+        <p className="text-center text-gray-600">Auto-scans full pages as you sweep—no need to know size. Auto-speaks accumulated data after collection. Blur text to re-speak.</p>
 
         <div className="space-y-4">
           <video
@@ -475,27 +485,28 @@ export default function Home() {
             <div className="flex justify-center">
               <button
                 onClick={toggleBlindMode}
-                disabled={isProcessing}
+                disabled={isProcessing || isReading}
                 className={`px-6 py-3 font-semibold rounded-lg shadow-md transition-colors ${
                   isBlindMode
                     ? 'bg-purple-600 text-white hover:bg-purple-700'
                     : 'bg-indigo-500 text-white hover:bg-indigo-600'
-                }`}
+                } ${isReading ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 {isBlindMode ? 'Stop Sweep' : 'Start Blind Sweep'}
               </button>
             </div>
-            <p className="text-xs text-center text-gray-500">Sweep camera slowly over the whole page—it auto-detects & reads.</p>
+            <p className="text-xs text-center text-gray-500">Sweep camera slowly over the whole page—it auto-collects & speaks when done.</p>
           </div>
         )}
 
         <div className="text-center space-y-1">
           <p className="font-semibold text-gray-700">{status}</p>
           {confidence > 0 && <p className="text-xs text-blue-600">Conf: {Math.round(confidence)}%</p>}
+          {isReading && <p className="text-xs text-green-600">🔊 Speaking...</p>}
         </div>
 
         <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
-          <h2 className="text-lg font-semibold mb-2 text-gray-800">Accumulated Text (Blur to Speak):</h2>
+          <h2 className="text-lg font-semibold mb-2 text-gray-800">Accumulated Text (Auto-Speaks After Collection | Blur to Re-Speak):</h2>
           <textarea
             ref={textAreaRef}
             value={extractedText}
@@ -507,7 +518,7 @@ export default function Home() {
         </div>
 
         <div className="text-xs text-gray-500 text-center space-y-1">
-          <p>👁️ Blur text area to speak generated content. Blind Mode: Continuous scan + audio cues.</p>
+          <p>👁️ Auto-speaks full accumulated data after sweep collection. Blind Mode: Continuous scan + audio cues.</p>
           <p>💡 Enhanced accuracy: LSTM + median filter + 300 DPI resize. Deploy on Vercel for mobile.</p>
         </div>
       </div>
