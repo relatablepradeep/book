@@ -42,9 +42,8 @@ export default function Home() {
       if (voice && voice.lang.startsWith('en-US')) return voice;
     }
 
-    // Fallback: First en-US female or neutral
-    return voices.find(v => v.lang.startsWith('en-US') && v.gender === 'female') ||
-           voices.find(v => v.lang.startsWith('en-US'));
+    // Fallback: First en-US voice (no gender check, as it's non-standard)
+    return voices.find(v => v.lang.startsWith('en-US')) ?? null;
   };
 
   // ✅ Chunk text into ~200-word segments for unlimited range
@@ -426,10 +425,6 @@ export default function Home() {
           </pre>
         </div>
 
-        <div className="text-xs text-gray-500 text-center space-y-1">
-          <p>💡 Scans entire pages—splits >200 words for smooth playback. Uses best available voice (e.g., Google US English).</p>
-          <p>Deploy to <a href="https://vercel.com" className="underline text-blue-600" target="_blank" rel="noopener noreferrer">Vercel</a> for mobile.</p>
-        </div>
       </div>
     </main>
   );
